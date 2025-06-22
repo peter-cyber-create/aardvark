@@ -1,0 +1,139 @@
+// This is your Prisma schema file
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  username  String   @unique
+  password  String
+  role      Role     @default(STAFF)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions        Session[]
+  liveActivities  LiveActivity[]
+  checkins       Checkin[]
+
+  @@map("users")
+}
+
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken String   @unique
+  userId       String   @db.ObjectId
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model LiveActivity {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  action      String
+  description String
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("live_activity_logs")
+}
+
+model Accommodation {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomNumber    String   @unique
+  roomType      String
+  status        RoomStatus @default(VACANT)
+  pricePerNight Float
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  checkins      Checkin[]
+
+  @@map("accommodations")
+}
+
+model Checkin {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String   @db.ObjectId
+  accommodationId String?  @db.ObjectId
+  guestNames      String[] // Array of guest names
+  clientPhone     String?
+  clientEmail     String?
+  tourCompany     String?
+  otherInfo       String?
+  serviceType     ServiceType
+  cottageType     CottageType?
+  cottageNumber   String?
+  cottageStatus   CottageStatus @default(AVAILABLE)
+  numChildren     Int @default(0)
+  childrenAges    String[] // Store age brackets as strings
+  status          CheckStatus @default(ACTIVE)
+  checkInDateTime DateTime @default(now())
+  checkOutDateTime DateTime?
+  signature       String? // Base64 encoded signature
+  totalCost       Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user           User          @relation(fields: [userId], references: [id])
+  accommodation  Accommodation? @relation(fields: [accommodationId], references: [id])
+
+  @@map("checkins")
+}
+
+model SyncQueue {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  operation   String   // CREATE, UPDATE, DELETE
+  model       String   // The model name (e.g., "checkin", "room")
+  data        Json     // The data to sync
+  status      String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  error       String?  // Error message if sync failed
+  attempts    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("sync_queue")
+}
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+enum RoomStatus {
+  VACANT
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum ServiceType {
+  ACCOMMODATION
+  ACTIVITY
+}
+
+enum CottageType {
+  SINGLE
+  DOUBLE
+  TWIN
+  TRIPLE
+  QUADRUPLE
+}
+
+enum CottageStatus {
+  AVAILABLE
+  RESERVED
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum CheckStatus {
+  ACTIVE
+  CHECKED_OUT
+  CANCELLED
+}

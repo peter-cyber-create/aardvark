@@ -1,0 +1,160 @@
+import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { prisma } from '@/lib/prisma';
+import { logActivity } from '@/lib/activity-logger';
+import { z } from 'zod';
+import { ApiError, handleApiError } from '@/lib/api-error';
+
+const CheckinInput = z.object({
+  guestName: z.string().min(1, "Guest name is required"),
+  serviceType: z.enum(['ACCOMMODATION', 'PARKING']),
+  roomId: z.string().optional(),
+  vehicleNumber: z.string().optional(),
+});
+
+type CheckinData = z.infer<typeof CheckinInput>;
+
+export async function POST(req: Request) {
+  try {
+    const session = await getServerSession();
+    if (!session?.user) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    const body = await req.json();
+    const result = CheckinInput.safeParse(body);
+
+    if (!result.success) {
+      throw new ApiError(400, 'Invalid input', result.error.flatten());
+    }
+
+    const { guestName, serviceType, roomId, vehicleNumber } = result.data;
+
+    if (serviceType === 'ACCOMMODATION') {
+      if (!roomId) {
+        throw new ApiError(400, 'Room ID is required for accommodation check-in');
+      }
+
+      const room = await prisma.accommodation.findUnique({
+        where: { id: roomId },
+      });
+
+      if (!room) {
+        throw new ApiError(404, 'Room not found');
+      }
+
+      if (room.status === 'OCCUPIED') {
+        throw new ApiError(400, 'Room is already occupied');
+      }
+
+      const [checkin] = await prisma.$transaction([
+        prisma.checkin.create({
+          data: {
+            userId: session.user.id,
+            guestName,
+            serviceType,
+            accommodationId: roomId,
+            status: 'ACTIVE',
+          },
+          include: {
+            accommodation: true,
+            user: {
+              select: {
+                username: true,
+              },
+            },
+          },
+        }),
+        prisma.accommodation.update({
+          where: { id: roomId },
+          data: { status: 'OCCUPIED' },
+        }),
+      ]);
+
+      await logActivity(
+        session.user.id,
+        'CHECK_IN',
+        `Created accommodation check-in for ${guestName} in room ${room.roomNumber}`
+      );
+
+      return NextResponse.json(checkin);
+    }
+
+    // Handle parking check-in
+    if (!vehicleNumber) {
+      throw new ApiError(400, 'Vehicle number is required for parking check-in');
+    }
+
+    const existingParking = await prisma.parking.findFirst({
+      where: {
+        vehicleNumber,
+        status: 'OCCUPIED',
+      },
+    });
+
+    if (existingParking) {
+      throw new ApiError(400, 'Vehicle is already parked');
+    }
+
+    const parking = await prisma.parking.create({
+      data: {
+        userId: session.user.id,
+        vehicleNumber,
+        status: 'OCCUPIED',
+        checkInTime: new Date().toLocaleTimeString(),
+      },
+      include: {
+        user: {
+          select: {
+            username: true,
+          },
+        },
+      },
+    });
+
+    await logActivity(
+      session.user.id,
+      'PARKING_CHECK_IN',
+      `Created parking entry for vehicle ${vehicleNumber}`
+    );
+
+    return NextResponse.json(parking);
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    const session = await getServerSession();
+    if (!session?.user) {
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    const { searchParams } = new URL(req.url);
+    const status = searchParams.get('status') as 'ACTIVE' | 'CHECKED_OUT' | null;
+    const type = searchParams.get('type') as 'ACCOMMODATION' | 'PARKING' | null;
+
+    const checkins = await prisma.checkin.findMany({
+      where: {
+        ...(status && { status }),
+        ...(type && { serviceType: type }),
+      },
+      orderBy: {
+        checkInDateTime: 'desc',
+      },
+      include: {
+        accommodation: true,
+        user: {
+          select: {
+            username: true,
+          },
+        },
+      },
+    });
+
+    return NextResponse.json(checkins);
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
